@@ -1,0 +1,155 @@
+---
+title: "Practical Machine Learning Course Project"
+output: html_document
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(cache = TRUE)
+```
+
+## Set up Environment
+```{r environment}
+library(ggplot2, quietly = TRUE)
+library(caret, quietly = TRUE)
+library(parallel, quietly = TRUE)
+library(doParallel, quietly = TRUE)
+
+set.seed(12345)
+```
+
+## Loading Data
+
+First let's load the data:
+
+```{r data load}
+trainurl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testurl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+raw_train <- read.csv(url(trainurl))
+raw_test <- read.csv(url(testurl))
+```
+
+Then we will create a data partition for building our models
+```{r partition}
+inTrain  <- createDataPartition(raw_train$classe, p=0.6, list=FALSE)
+train <- raw_train[inTrain, ]
+val  <- raw_train[-inTrain, ]
+```
+
+# Exploratory Analysis and Data Cleaning
+
+
+```{r explore}
+dim(train)
+
+str(train)
+```
+
+There are 11776 observations of 160 variables in the training data set.  It appearas there are several parameters which are not used, so let's remove features to make the analysis run faster.
+
+```{r near_zeros}
+nearzero <- nearZeroVar(train)
+train <- train[, -nearzero]
+val <- val[, -nearzero]
+dim(train)
+```
+
+We have reduced the predictors down to 100, but there are still several predictors with mostly NA values.
+
+```{r NAs}
+nas <- colSums(is.na(train))
+train <- train[, nas == 0]
+val <- val[, nas == 0]
+
+```
+
+There are now 59 non-zero variables; however, the first 5 columns are used for identification, and can be removed.
+
+```{r IDs}
+train <- train[, -c(1:5)]
+val <- val[, -c(1:5)]
+dim(train)
+dim(val)
+```
+
+Finally, we have a tidy dataset composed of only 53 predictors and our outcome (classe).
+
+## Model Fitting
+
+First we set up trcontrol for our model fitting.  We will use cross-validation with 5 resampling iterations.
+
+```{r clusters}
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+ctrl <- trainControl(method = "cv",
+                           number = 5,
+                           allowParallel = TRUE)
+```
+
+### Random Forest
+
+First we will use a random forest model and determine it's out of sample error with the test set.
+
+```{r randomForest}
+fit_rf <- train(classe ~ ., data = train, method ="rf", trControl = ctrl)
+fit_rf$finalModel
+```
+
+```{r rf_prediction}
+pred_rf <- predict(fit_rf, newdata = val)
+confusionMatrix(pred_rf, val$classe)
+```
+
+### Boosted Model (GBM)
+
+```{r gbm}
+fit_gbm <- train(classe ~ ., data = train, method ="gbm", trControl = ctrl, verbose = FALSE)
+fit_gbm$finalModel
+```
+
+```{r gbm_prediction}
+pred_gbm <- predict(fit_gbm, newdata = val)
+confusionMatrix(pred_gbm, val$classe)
+```
+
+
+### Tree-Based Model
+
+```{r tree}
+fit_tree <- train(classe ~ ., data = train, method ="rpart", trControl = ctrl)
+fit_tree$finalModel
+```
+
+```{r tree_prediction}
+pred_tree <- predict(fit_tree, newdata = val)
+confusionMatrix(pred_tree, val$classe)
+```
+
+### Combined Model
+
+The boosted and random forest model provided very good out-of-sample accuracy.  Let's see if we can improve by ensembling the approaches.
+
+```{r comb}
+comb_df <- data.frame(pred_rf, pred_gbm, classe = val$classe)
+fit_comb <- train(classe ~ ., method = "rf", data = comb_df, trControl = ctrl)
+```
+
+```{r comb_prediction}
+pred_comb <- predict(fit_comb, comb_df)
+confusionMatrix(pred_tree, val$classe)
+```
+
+
+```{r dereg, echo = FALSE}
+registerDoSEQ()
+```
+
+## Prediction on the test data
+
+Random forest and GBM had the best estimate of out-of-sample accuracy at 99.89% and 98.61%, respectively. While, the tree based and ensemble models had 59.62% out of sample accuracy.  We will use our best algorithm, random forest, to predict on the testing set.
+
+```{r test}
+pred_test <- predict(fit_rf, newdata = raw_test)
+pred_test
+```
+
+
